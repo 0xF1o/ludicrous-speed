@@ -1,0 +1,9 @@
+name: ludicrousspeed
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8731:80"
+    volumes:
+      - .:/usr/share/nginx/html:ro
+    restart: unless-stopped

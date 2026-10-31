@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LudicrousSpeed — RSVP speed reader</title>
+<script>
+  const darkMedia = matchMedia('(prefers-color-scheme: dark)');
+  // 'auto' follows the OS; an explicit light/dark choice is remembered and wins.
+  function themeMode() { try { const m = JSON.parse(localStorage.getItem('ls.theme')); return m === 'light' || m === 'dark' ? m : 'auto'; } catch { return 'auto'; } }
+  function applyTheme(mode = themeMode()) {
+    document.documentElement.dataset.themeMode = mode;
+    document.documentElement.dataset.theme = mode === 'auto' ? (darkMedia.matches ? 'dark' : 'light') : mode;
+  }
+  try { // migrate settings saved under the old FastFocal keys (theme excluded: auto should win)
+    for (const k of ['wpm', 'fs', 'text']) {
+      const old = localStorage.getItem('ff.' + k);
+      if (old !== null && localStorage.getItem('ls.' + k) === null) localStorage.setItem('ls.' + k, old);
+    }
+  } catch {}
+  applyTheme(); // before first paint, so there is no flash
+</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root {
+    color-scheme: light;
+    --bg: #f4f3ef; --panel: #fff; --fg: #17181c; --muted: #6b6f76;
+    --line: #e3e1da; --accent: #d94f3d; --accent-soft: rgba(217, 79, 61, .1);
+    --guide: rgba(23, 24, 28, .18); --shadow: 0 12px 32px rgba(20, 20, 30, .07);
+    --word-size: clamp(2.2rem, 9vmin, 5rem);
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #101114; --panel: #17181d; --fg: #eceef1; --muted: #9aa0a8;
+    --line: #272a31; --accent: #ff6b52; --accent-soft: rgba(255, 107, 82, .13);
+    --guide: rgba(236, 238, 241, .18); --shadow: 0 12px 32px rgba(0, 0, 0, .35);
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); display: flex; flex-direction: column;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    transition: background .2s, color .2s;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    max-width: 960px; width: 100%; margin: 0 auto; padding: 16px 20px;
+  }
+  .brand { font-size: 1rem; font-weight: 650; letter-spacing: -.01em; }
+  .brand b { color: var(--accent); }
+  .top-actions { display: flex; gap: 8px; }
+
+  main { flex: 1; width: 100%; max-width: 960px; margin: 0 auto; padding: 0 20px 20px; display: flex; flex-direction: column; }
+  .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .hidden { display: none !important; }
+  .muted { color: var(--muted); font-size: .9rem; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+    padding: 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 12px; transition: border-color .15s;
+  }
+  .panel.drag { border-color: var(--accent); background: var(--accent-soft); }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  textarea {
+    width: 100%; min-height: 34vh; resize: vertical; padding: 14px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    font: inherit; line-height: 1.55; transition: border-color .15s;
+  }
+  textarea:focus { border-color: var(--accent); outline: none; }
+
+  .btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; padding: 10px 16px; font-weight: 550; font-size: .95rem; transition: transform .1s, background .15s, border-color .15s; }
+  .btn:active { transform: translateY(1px); }
+  .primary { background: var(--accent); color: #fff; }
+  .primary:hover { filter: brightness(1.06); }
+  .ghost { border: 1px solid var(--line); background: var(--panel); }
+  .ghost:hover { border-color: var(--fg); }
+  .warn { color: var(--accent); }
+
+  .icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+  .icon:hover { border-color: var(--fg); }
+  .icon.auto { border-style: dashed; }
+  .play-btn { width: 58px; height: 58px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; }
+  .play-btn:hover { filter: brightness(1.08); }
+  .play-btn svg { width: 24px; height: 24px; stroke: none; fill: currentColor; }
+
+  /* reader */
+  .stage { position: relative; flex: 1; min-height: 42vh; overflow: hidden; }
+  .tick { position: absolute; left: 50%; width: 2px; margin-left: -1px; background: var(--guide); border-radius: 2px; height: max(18px, calc(var(--word-size) * 0.6)); }
+  .tick.t { bottom: calc(50% + var(--word-size) * 0.8); }
+  .tick.b { top: calc(50% + var(--word-size) * 0.8); }
+  .word {
+    position: absolute; left: 50%; top: 50%; white-space: nowrap;
+    font-size: var(--word-size); font-weight: 600; letter-spacing: .01em;
+    transform: translate(calc(-1 * var(--shift, 0px)), -50%);
+  }
+  .word #piv { color: var(--accent); }
+  .meta { display: flex; justify-content: space-between; gap: 12px; font-size: .85rem; color: var(--muted); padding: 4px 2px 8px; font-variant-numeric: tabular-nums; }
+  .track { height: 16px; margin: 0 -6px; padding: 6px; cursor: pointer; }
+  .track > div { height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .track i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width .15s linear; }
+  .controls {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; box-shadow: var(--shadow);
+  }
+  .speed { display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--muted); }
+  .speed input { width: 110px; accent-color: var(--accent); cursor: pointer; }
+  .speed output { min-width: 4.4rem; color: var(--fg); font-variant-numeric: tabular-nums; font-size: .85rem; }
+  .spacer { margin-left: auto; }
+
+  @media (max-width: 620px) {
+    .speed input { width: 80px; }
+    .controls { gap: 8px; }
+    .spacer { flex: 1 1 100%; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Ludicrous<b>Speed</b></div>
+  <div class="top-actions"><button class="icon" id="themeBtn"></button></div>
+</header>
+
+<main>
+  <section class="screen" id="setup">
+    <div class="panel" id="panel">
+      <div class="row">
+        <label class="btn ghost">Choose file<input id="file" type="file" accept=".txt,.md,.markdown,.text,text/plain,text/markdown" hidden></label>
+        <span class="muted">or drop a .txt / .md file here</span>
+        <button class="btn ghost" id="sampleBtn">Sample text</button>
+      </div>
+      <textarea id="text" spellcheck="false" placeholder="Paste or type your text here…"></textarea>
+      <div class="row">
+        <span class="muted" id="stats">0 words · 0:00</span>
+        <div class="spacer"></div>
+        <button class="btn primary" id="startBtn">Start reading →</button>
+      </div>
+    </div>
+    <p class="muted" style="margin: 14px 2px 0">Ctrl+Enter start · Space play/pause · ← → skip · ↑ ↓ speed · R restart</p>
+  </section>
+
+  <section class="screen hidden" id="reader">
+    <div class="stage">
+      <div class="tick t"></div><div class="tick b"></div>
+      <div class="word" id="word"><span id="pre"></span><span id="piv"></span><span id="post"></span></div>
+    </div>
+    <div class="meta"><span id="counter">1 / 1</span><span id="left">0:00 left</span></div>
+    <div class="track" id="track" title="Click to seek"><div><i id="bar"></i></div></div>
+    <div class="controls">
+      <button class="icon" id="prevBtn" aria-label="Previous word" title="Previous (←)">«</button>
+      <button class="play-btn" id="playBtn" aria-label="Play" title="Play / pause (Space)"></button>
+      <button class="icon" id="nextBtn" aria-label="Next word" title="Next (→)">»</button>
+      <div class="speed">
+        <label for="wpm">Speed</label>
+        <input id="wpm" type="range" min="100" max="1000" step="10">
+        <output id="wpmOut" for="wpm">300 wpm</output>
+      </div>
+      <div class="speed">
+        <label for="fs">Size</label>
+        <input id="fs" type="range" min="0.7" max="1.6" step="0.05">
+      </div>
+      <button class="btn ghost spacer" id="editBtn">Edit text</button>
+    </div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+const state = { words: [], i: 0, playing: false, done: false, wpm: LS.get('ls.wpm', 300), fs: LS.get('ls.fs', 1) };
+let timer = null, dragDepth = 0, statsTimer = null;
+
+const els = {
+  themeBtn: $('themeBtn'), setup: $('setup'), reader: $('reader'), panel: $('panel'), file: $('file'),
+  sampleBtn: $('sampleBtn'), text: $('text'), stats: $('stats'), startBtn: $('startBtn'),
+  word: $('word'), pre: $('pre'), piv: $('piv'), post: $('post'), counter: $('counter'), left: $('left'),
+  track: $('track'), bar: $('bar'), prevBtn: $('prevBtn'), playBtn: $('playBtn'), nextBtn: $('nextBtn'),
+  wpm: $('wpm'), wpmOut: $('wpmOut'), fs: $('fs'), editBtn: $('editBtn'),
+};
+
+const ICONS = {
+  play: '<svg viewBox="0 0 24 24"><path d="M8 4.5l11 7.5-11 7.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M6.5 4h4v16h-4zM13.5 4h4v16h-4z"/></svg>',
+  replay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a8 8 0 1 1 2 7"/><path d="M4 4v6h6"/></svg>',
+  moon: '<svg viewBox="0 0 24 24"><path d="M20.5 13.2A8.6 8.6 0 1 1 10.8 3.5a6.9 6.9 0 0 0 9.7 9.7z"/></svg>',
+  auto: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 0 0 16.8z" fill="currentColor" stroke="none"/></svg>',
+  sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.2v2.4M12 19.4v2.4M2.2 12h2.4M19.4 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></svg>',
+};
+
+const SAMPLE = `Speed reading with RSVP
+
+Rapid Serial Visual Presentation is a reading technique that shows one word at a time in a fixed spot, so your eyes never have to move across a page. Without saccades, the small jumps your eyes make between words, you can read faster and with less effort. The highlighted letter marks the optimal recognition point, the spot where the eye naturally lands when it recognizes a word. Keep your gaze on that letter and let the words come to you.
+
+Start slowly. Most people read between two hundred and three hundred words per minute, and pushing much faster than that right away feels like watching a movie on fast forward. Raise the speed in small steps and only move on when the text still feels comfortable.
+
+Pause whenever you like. Skipping backwards is always allowed, and a paragraph break adds a small rest so the text keeps its rhythm. Reading is not a race, it is a conversation between you and the author.`;
+
+/* --- text model ------------------------------------------------------- */
+
+function tokenize(text) {
+  const out = [];
+  const re = /(\s*)(\S+)/g;
+  let m;
+  while ((m = re.exec(text))) out.push({ w: m[2], para: /\n\s*\n/.test(m[1]) });
+  return out;
+}
+
+// Optimal recognition point: which character the eye should land on.
+function orpIndex(word) {
+  const chars = Array.from(word);
+  const leadMatch = word.match(/^[^\p{L}\p{N}]+/u);
+  const lead = leadMatch ? Array.from(leadMatch[0]).length : 0;
+  const core = Array.from(word.slice(lead)).filter((c) => /[\p{L}\p{N}]/u.test(c));
+  const n = core.length || 1;
+  const idx = n <= 1 ? 0 : n <= 5 ? 1 : n <= 9 ? 2 : n <= 13 ? 3 : 4;
+  return Math.min(lead + idx, Math.max(0, chars.length - 1));
+}
+
+function delayFor(tok) {
+  const n = Array.from(tok.w).length;
+  const last = tok.w.replace(/["'”’)\]]+$/, '').slice(-1);
+  let mult = 1;
+  if (['.', '!', '?'].includes(last)) mult = 2;
+  else if ([',', ';', ':'].includes(last)) mult = 1.5;
+  if (tok.para) mult = Math.max(mult, 2.6);
+  if (n > 8) mult *= 1 + Math.min(0.5, (n - 8) * 0.05);
+  return Math.min(4000, (60000 / state.wpm) * mult);
+}
+
+/* --- rendering -------------------------------------------------------- */
+
+function render() {
+  const tok = state.words[state.i];
+  if (!tok) return;
+  const chars = Array.from(tok.w);
+  const p = orpIndex(tok.w);
+  els.pre.textContent = chars.slice(0, p).join('');
+  els.piv.textContent = chars[p] || '';
+  els.post.textContent = chars.slice(p + 1).join('');
+  const shrink = Math.max(0.3, Math.min(1, 14 / chars.length));
+  els.word.style.fontSize = `calc(var(--word-size) * ${shrink.toFixed(3)})`;
+  fitToStage();
+  updateMeta();
+}
+
+function updateMeta() {
+  const total = state.words.length || 1;
+  els.counter.textContent = `${Math.min(state.i + 1, total)} / ${total}`;
+  els.left.textContent = state.done ? 'finished' : `${fmt((total - state.i - 1) / state.wpm * 60)} left`;
+  els.bar.style.width = `${((state.i + 1) / total) * 100}%`;
+}
+
+function wordMetrics() {
+  const preW = els.pre.getBoundingClientRect().width;
+  const pivW = els.piv.getBoundingClientRect().width;
+  const wordW = els.word.getBoundingClientRect().width;
+  const shift = preW + pivW / 2;
+  return { wordW, shift, need: Math.max(shift, wordW - shift) };
+}
+
+function scaleFont(factor, min) {
+  const fs = parseFloat(getComputedStyle(els.word).fontSize);
+  els.word.style.fontSize = `${Math.max(min, fs * factor)}px`;
+}
+
+// Keep the pivot letter centred. If a word is too long for that, shrink it and,
+// as a last resort, centre the whole word so nothing gets cut off.
+function fitToStage() {
+  const half = Math.max(1, els.word.parentElement.clientWidth / 2 - 8);
+  let m = wordMetrics();
+  if (m.need > half) { scaleFont(half / m.need, 12); m = wordMetrics(); }
+  if (m.need > half) { scaleFont(Math.min(1, half / (m.wordW / 2)), 9); m = wordMetrics(); m.shift = m.wordW / 2; }
+  els.word.style.setProperty('--shift', `${m.shift.toFixed(1)}px`);
+}
+
+function fmt(sec) {
+  const t = Math.max(0, Math.round(sec));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+/* --- playback --------------------------------------------------------- */
+
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(() => advance(1), delayFor(state.words[state.i]));
+}
+
+function play() {
+  if (!state.words.length) return;
+  if (state.done) { state.i = 0; state.done = false; render(); }
+  state.playing = true;
+  syncPlayBtn();
+  schedule();
+}
+
+function pause() {
+  state.playing = false;
+  clearTimeout(timer);
+  timer = null;
+  syncPlayBtn();
+}
+
+function advance(step) {
+  if (!state.words.length) return;
+  const next = state.i + step;
+  if (next >= state.words.length) {
+    state.i = state.words.length - 1;
+    state.playing = false;
+    state.done = true;
+    clearTimeout(timer);
+    syncPlayBtn();
+    updateMeta();
+    return;
+  }
+  state.i = Math.max(0, next);
+  state.done = false;
+  render();
+  if (state.playing) schedule();
+}
+
+function seek(i) {
+  state.i = Math.max(0, Math.min(state.words.length - 1, i));
+  state.done = false;
+  render();
+  if (state.playing) schedule();
+}
+
+function syncPlayBtn() {
+  const icon = state.playing ? ICONS.pause : state.done ? ICONS.replay : ICONS.play;
+  els.playBtn.innerHTML = icon;
+  els.playBtn.setAttribute('aria-label', state.playing ? 'Pause' : state.done ? 'Replay' : 'Play');
+}
+
+/* --- ui wiring -------------------------------------------------------- */
+
+const NEXT_THEME = { auto: 'light', light: 'dark', dark: 'auto' };
+
+function syncThemeBtn() {
+  const mode = themeMode(), dark = document.documentElement.dataset.theme === 'dark';
+  els.themeBtn.innerHTML = mode === 'auto' ? ICONS.auto : dark ? ICONS.sun : ICONS.moon;
+  els.themeBtn.classList.toggle('auto', mode === 'auto');
+  const label = mode === 'auto' ? `Theme: auto (system is ${dark ? 'dark' : 'light'})` : `Theme: ${mode}`;
+  els.themeBtn.setAttribute('aria-label', label);
+  els.themeBtn.title = `${label} — click for ${NEXT_THEME[mode]}`;
+}
+
+function cycleTheme() {
+  const next = NEXT_THEME[themeMode()];
+  LS.set('ls.theme', next);
+  applyTheme(next);
+  syncThemeBtn();
+}
+
+function updateStats() {
+  const text = els.text.value.trim();
+  const n = tokenize(text).length;
+  els.stats.textContent = `${n.toLocaleString()} words · ${fmt((n / state.wpm) * 60)}`;
+  els.stats.classList.remove('warn');
+  LS.set('ls.text', text.length > 400000 ? '' : els.text.value);
+}
+
+function showScreen(reader) {
+  els.setup.classList.toggle('hidden', reader);
+  els.reader.classList.toggle('hidden', !reader);
+}
+
+function startReading() {
+  const text = els.text.value.trim();
+  if (!text) {
+    els.stats.textContent = 'Add some text first…';
+    els.stats.classList.add('warn');
+    els.text.focus();
+    return;
+  }
+  pause();
+  state.words = tokenize(text);
+  state.i = 0;
+  state.done = false;
+  showScreen(true);
+  render();
+  play();
+}
+
+function setWpm(v) {
+  state.wpm = Math.round(Math.max(100, Math.min(1000, v)));
+  els.wpm.value = state.wpm;
+  els.wpmOut.textContent = `${state.wpm} wpm`;
+  LS.set('ls.wpm', state.wpm);
+  if (!els.setup.classList.contains('hidden')) updateStats();
+  updateMeta();
+  if (state.playing) schedule();
+}
+
+function setFs(v) {
+  state.fs = Math.max(0.7, Math.min(1.6, v));
+  els.fs.value = state.fs;
+  els.word.parentElement.style.setProperty('--word-size', `calc(clamp(2.2rem, 9vmin, 5rem) * ${state.fs})`);
+  LS.set('ls.fs', state.fs);
+  render();
+}
+
+async function loadFile(file) {
+  if (!file) return;
+  try {
+    els.text.value = (await file.text()).replace(/\r\n?/g, '\n');
+    updateStats();
+    els.text.focus();
+  } catch {
+    els.stats.textContent = `Could not read ${file.name}`;
+    els.stats.classList.add('warn');
+  }
+}
+
+els.themeBtn.addEventListener('click', cycleTheme);
+darkMedia.addEventListener('change', () => { if (themeMode() === 'auto') { applyTheme('auto'); syncThemeBtn(); } });
+els.startBtn.addEventListener('click', startReading);
+els.playBtn.addEventListener('click', () => (state.playing ? pause() : play()));
+els.prevBtn.addEventListener('click', () => advance(-1));
+els.nextBtn.addEventListener('click', () => advance(1));
+els.editBtn.addEventListener('click', () => { pause(); showScreen(false); els.text.focus(); });
+els.file.addEventListener('change', () => { loadFile(els.file.files[0]); els.file.value = ''; });
+els.text.addEventListener('input', () => { clearTimeout(statsTimer); statsTimer = setTimeout(updateStats, 150); });
+els.wpm.addEventListener('input', () => setWpm(+els.wpm.value));
+els.fs.addEventListener('input', () => setFs(+els.fs.value));
+
+els.track.addEventListener('click', (e) => {
+  const r = els.track.getBoundingClientRect();
+  seek(Math.floor(((e.clientX - r.left) / r.width) * state.words.length));
+});
+
+els.sampleBtn.addEventListener('click', () => {
+  els.text.value = SAMPLE;
+  updateStats();
+});
+
+els.panel.addEventListener('dragenter', (e) => {
+  if (!e.dataTransfer?.types.includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  els.panel.classList.add('drag');
+});
+els.panel.addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+els.panel.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; els.panel.classList.remove('drag'); }
+});
+els.panel.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  els.panel.classList.remove('drag');
+  loadFile(e.dataTransfer?.files[0]);
+});
+
+document.addEventListener('keydown', (e) => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  const inReader = !els.reader.classList.contains('hidden');
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (!inReader) startReading();
+    return;
+  }
+  if (tag === 'textarea' || tag === 'input') return;
+  if (!inReader) return;
+  if (e.code === 'Space') { e.preventDefault(); state.playing ? pause() : play(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); advance(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); advance(-1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); setWpm(state.wpm + 20); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); setWpm(state.wpm - 20); }
+  else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); seek(0); if (!state.playing) play(); }
+});
+
+addEventListener('resize', () => { if (!els.reader.classList.contains('hidden')) render(); });
+
+syncThemeBtn();
+els.wpm.value = state.wpm;
+els.wpmOut.textContent = `${state.wpm} wpm`;
+els.fs.value = state.fs;
+els.word.parentElement.style.setProperty('--word-size', `calc(clamp(2.2rem, 9vmin, 5rem) * ${state.fs})`);
+els.text.value = LS.get('ls.text', '') || '';
+updateStats();
+syncPlayBtn();
+render();
+</script>
+</body>
+</html>
