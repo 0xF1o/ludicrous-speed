@@ -28,10 +28,18 @@ Paste text or load a `.txt`/`.md` file (or drop it on the page), then read one w
 | Start reading | Ctrl/Cmd + Enter |
 | Seek | Click the progress bar |
 | Text size | Size slider |
+| Play / pause (touch) | Tap the stage |
+| Speed / size (touch) | Swipe ← → / ↑ ↓ on the stage |
 | Theme | Header toggle: auto → light → dark |
 | Edit text | "Edit text" button |
 
 Pauses are longer after sentence ends, commas, paragraphs and long words. Speed, text size, theme and the last text are remembered in `localStorage`.
+
+## Read any page
+
+[`bookmarklet.html`](bookmarklet.html) has a one-click bookmarklet: select text anywhere on the web, run it, and the reader opens with that text, already playing.
+
+It hands the text over in the URL fragment (`#t=<base64url of the utf-8 text>`). Browsers never send the fragment to a server, so the text is not uploaded anywhere, and the site clears it from the address bar once it has been imported.
 
 ## Theme
 

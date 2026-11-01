@@ -42,6 +42,8 @@
     transition: background .2s, color .2s;
   }
   button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  a { color: inherit; text-decoration-color: var(--line); text-underline-offset: 3px; }
+  a:hover { color: var(--accent); text-decoration-color: currentColor; }
   button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -180,7 +182,7 @@
         <button class="btn primary" id="startBtn">Start reading →</button>
       </div>
     </div>
-    <p class="muted" style="margin: 14px 2px 0">Ctrl+Enter start · Space play/pause · ← → skip · ↑ ↓ speed · R restart</p>
+    <p class="muted" style="margin: 14px 2px 0">Ctrl+Enter start · Space play/pause · ← → skip · ↑ ↓ speed · R restart · <a href="bookmarklet.html">read any page</a></p>
   </section>
 
   <section class="screen hidden" id="reader">
@@ -451,6 +453,22 @@ function setFs(v) {
   render();
 }
 
+/* --- bookmarklet hand-over ------------------------------------------- */
+
+// The bookmarklet opens #t=<base64url of the selected utf-8 text>.
+// The fragment never leaves the browser, so the text is not sent anywhere.
+function importFromHash() {
+  const m = /^#t=([A-Za-z0-9\-_=]+)$/.exec(location.hash);
+  if (!m) return false;
+  try {
+    const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    els.text.value = new TextDecoder().decode(bytes).trim();
+  } catch { return false; }
+  history.replaceState(null, '', location.pathname + location.search);
+  return true;
+}
+
 async function loadFile(file) {
   if (!file) return;
   try {
@@ -574,9 +592,12 @@ els.wpmOut.textContent = `${state.wpm} wpm`;
 els.fs.value = state.fs;
 els.word.parentElement.style.setProperty('--word-size', `calc(clamp(2.2rem, 9vmin, 5rem) * ${state.fs})`);
 els.text.value = LS.get('ls.text', '') || '';
+const imported = importFromHash();
 updateStats();
 syncPlayBtn();
 render();
+if (imported) startReading();
+addEventListener('hashchange', () => { if (importFromHash()) { updateStats(); startReading(); } });
 </script>
 </body>
 </html>
