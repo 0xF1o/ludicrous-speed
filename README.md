@@ -41,6 +41,28 @@ Pauses are longer after sentence ends, commas, paragraphs and long words. Speed,
 
 It hands the text over in the URL fragment (`#t=<base64url of the utf-8 text>`). Browsers never send the fragment to a server, so the text is not uploaded anywhere, and the site clears it from the address bar once it has been imported.
 
+## Read the page in place (overlay)
+
+[`overlay-bookmarklet.html`](overlay-bookmarklet.html) has a second bookmarklet that opens no tab: the reader
+drops in as an overlay on top of the page you are already on, starts with your selection, and hides everything
+else. The X in the top right corner (or Esc) closes it and puts the page back as it was — scroll lock, focus
+and scroll position included.
+
+It is built like the app, but lives in a shadow root:
+
+- the page's CSS cannot reach in (no matter how aggressive its resets are, and even on sites with a strict
+  `style-src` CSP), and `html { font-size: … }` cannot rescale the overlay,
+- the overlay's CSS cannot leak into the page, and the page's click/key/wheel handlers never see overlay events,
+- speed, size and theme are remembered per site in `localStorage`.
+
+Source: [`overlay-bookmarklet.js`](overlay-bookmarklet.js). The code inlined in the HTML page is generated
+(the page itself has no dependencies at runtime):
+
+```sh
+npm install
+npm run build     # build-overlay.mjs: minify with terser, percent-encode into the javascript: URL
+```
+
 ## Theme
 
 By default the theme follows your OS light/dark setting and switches live when you change it

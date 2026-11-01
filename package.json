@@ -1,0 +1,12 @@
+{
+  "name": "ludicrous-speed",
+  "private": true,
+  "type": "module",
+  "description": "Dev tooling for the LudicrousSpeed overlay bookmarklet",
+  "scripts": {
+    "build": "node build-overlay.mjs"
+  },
+  "devDependencies": {
+    "terser": "^5.51.2"
+  }
+}
